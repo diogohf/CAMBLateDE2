@@ -70,7 +70,6 @@
     integer, parameter :: halofit_casarini = 7
     integer, parameter :: halofit_mead2016 = 5, halofit_halomodel = 6, halofit_mead2015 = 8, halofit_mead2020 = 9
     integer, parameter :: halofit_mead2020_feedback = 10
-    integer, parameter :: halofit_mead2020_de = 11, halofit_mead2020_feedback_de = 12
     integer, parameter :: halofit_mead = halofit_mead2016 ! AM Kept for backwards compatibility
     integer, parameter :: halofit_default = halofit_mead2020
 
@@ -141,7 +140,7 @@
     public THalofit, HM_verbose
     public halofit_default, halofit_original, halofit_bird, halofit_peacock, halofit_takahashi
     public halofit_mead2016, halofit_mead2015, halofit_mead2020, halofit_halomodel, halofit_casarini
-    public halofit_mead2020_feedback, halofit_mead2020_de, halofit_mead2020_feedback_de
+    public halofit_mead2020_feedback
     public halofit_mead ! AM for backwards compatibility
 
     type HM_cosmology
@@ -158,7 +157,6 @@
         real(dl) :: grow_z, this_z ! cached growth factor at redshift being calculated
         logical :: wiggle_once = .false. ! extract the BAO wiggle once, at z=0
         logical :: wiggle_each_z = .false. ! extract the BAO wiggle separately at each redshift
-        logical :: use_camb_de = .false. ! use the active CAMB dark-energy background instead of effective w0-wa
         ! AM - Added feedback parameters below at fixed fiducial (DMONLY) values
         real(dl) :: A_baryon = 3.13
         real(dl) :: eta_baryon = 0.603
@@ -168,10 +166,10 @@
     type HM_tables
         ! Stuff that needs to be recalculated for each new z
         real(dl), allocatable :: c(:), rv(:), nu(:), sig(:), zc(:), m(:), rr(:), sigf(:)
-        real(dl), allocatable :: rs(:), nfw_norm(:), nfw_moment2(:) ! cached halo-profile quantities
-        real(dl), allocatable :: p1h_quad_weight(:), nu_eta(:), baryon_mass_fraction(:)
+        real(dl), allocatable :: rs(:), nfw_norm(:) ! halo profile scale radius and normalisation
+        real(dl), allocatable :: p1h_weight(:), nu_eta(:), baryon_mass_fraction(:)
         real(dl) :: sigv, sigv100, knl, rnl, neff, sig8z, z, dc, sig8z_cold
-        real(dl) :: eta_hm, kstar_hm, alpha_hm, fdamp_hm, kdamp_hm, one_minus_fnu_sq, f_star_hm
+        real(dl) :: eta_hm, kstar_hm, alpha_hm, fdamp_hm, one_minus_fnu_sq, f_star_hm
         real(dl) :: dolag_inf = 1, dolag_z = 1 ! cached Dolag (2004) concentration corrections
         integer :: n
         integer :: imead = -1 ! HMcode variant these HM_tables were filled for (see HMcode)
@@ -245,28 +243,6 @@
 
     contains
 
-    logical function is_mead2020(version)
-    integer, intent(in) :: version
-
-    is_mead2020 = version == halofit_mead2020 .or. version == halofit_mead2020_de
-
-    end function is_mead2020
-
-    logical function is_mead2020_feedback(version)
-    integer, intent(in) :: version
-
-    is_mead2020_feedback = version == halofit_mead2020_feedback .or. &
-        version == halofit_mead2020_feedback_de
-
-    end function is_mead2020_feedback
-
-    logical function uses_camb_de(version)
-    integer, intent(in) :: version
-
-    uses_camb_de = version == halofit_mead2020_de .or. version == halofit_mead2020_feedback_de
-
-    end function uses_camb_de
-
     function THalofit_PythonClass()
     character(len=:), allocatable :: THalofit_PythonClass
 
@@ -294,7 +270,7 @@
     if (this%halofit_version == halofit_mead2015 .or. this%halofit_version == halofit_mead2016) then
         this%HMcode_A_baryon = Ini%Read_Double('HMcode_A_baryon', 3.13_dl)
         this%HMcode_eta_baryon = Ini%Read_Double('HMcode_eta_baryon', 0.603_dl)
-    else if (is_mead2020_feedback(this%halofit_version)) then
+    else if (this%halofit_version == halofit_mead2020_feedback) then
         this%HMcode_logT_AGN = Ini%Read_Double('HMcode_logT_AGN', 7.8_dl)
     end if
     this%HMcode_wiggle_max_fnu = Ini%Read_Double('HMcode_wiggle_max_fnu', this%HMcode_wiggle_max_fnu)
@@ -328,8 +304,8 @@
             if (this%halofit_version == halofit_mead2016 .or. &
                 this%halofit_version == halofit_halomodel .or. &
                 this%halofit_version == halofit_mead2015 .or. &
-                is_mead2020(this%halofit_version) .or. &
-                is_mead2020_feedback(this%halofit_version)) then
+                this%halofit_version == halofit_mead2020 .or. &
+                this%halofit_version == halofit_mead2020_feedback) then
                 call this%HMcode(State, CAMB_Pk)
             else
 
@@ -626,7 +602,6 @@
     type(MatterPowerData) :: CAMB_Pk
     integer :: j, nz, iz_wiggle, npass, imead_base
     integer :: imead_pass(3)
-    real(dl), allocatable :: kh(:)
     type(HM_cosmology) :: cosi, cosm
     type(HM_tables) :: lut
 
@@ -647,10 +622,10 @@
     if (this%halofit_version == halofit_halomodel) imead_base = 0
     if (this%halofit_version == halofit_mead2016) imead_base = 1
     if (this%halofit_version == halofit_mead2015) imead_base = 2
-    if (is_mead2020(this%halofit_version)) imead_base = 3
+    if (this%halofit_version == halofit_mead2020) imead_base = 3
 
     ! The 2020 feedback model is a response: HMcode 2020, then the denominator and numerator
-    if (is_mead2020_feedback(this%halofit_version)) then
+    if (this%halofit_version == halofit_mead2020_feedback) then
         npass = 3
         imead_pass = [3, 4, 5]
     else
@@ -670,11 +645,8 @@
     !!AM - Assign cosmological parameters for the halo model calculation
     call assign_HM_cosmology(this, State, cosi)
 
-    ! Requested wavenumbers are shared by every redshift and feedback pass.
-    kh = exp(CAMB_Pk%log_kh)
-
     ! Fill growth function table (only needs to be done once)
-    call fill_growtab(cosi, State)
+    call fill_growtab(cosi)
 
     if (cosi%wiggle_once) then
         ! Extract the BAO wiggle from the available spectrum nearest z=0. The
@@ -689,23 +661,20 @@
     ! small parallel regions used to set each one up, so this is the outermost parallel region:
     ! each thread takes its own copy of the cosmology (intrinsic assignment deep-copies the
     ! interpolation tables) and its own look-up tables. The regions inside then run serially
-    ! (see HM_par_inner). For a single redshift it is faster not to open the region at all. The
-    ! active dark-energy object may contain mutable interpolation state, so exact-DE modes keep
-    ! the redshift loop serial; their k loops can still run in parallel after the background setup.
-    if (nz > 1 .and. .not. HM_verbose .and. .not. cosi%use_camb_de) then
-        ! JVR NOTE: could we make the modified HMcode parallel?
+    ! (see HM_par_inner). For a single redshift it is faster not to open the region at all.
+    if (nz > 1 .and. .not. HM_verbose) then
         !$OMP PARALLEL DEFAULT(SHARED), PRIVATE(cosm, lut, j)
         cosm = cosi
         !$OMP DO SCHEDULE(DYNAMIC)
         do j = 1, nz
-            call HMcode_redshift(this, State, CAMB_Pk, j, npass, imead_pass, kh, cosm, lut)
+            call HMcode_redshift(this, CAMB_Pk, j, npass, imead_pass, cosm, lut)
         end do
         !$OMP END DO
         !$OMP END PARALLEL
     else
         cosm = cosi
         do j = 1, nz
-            call HMcode_redshift(this, State, CAMB_Pk, j, npass, imead_pass, kh, cosm, lut)
+            call HMcode_redshift(this, CAMB_Pk, j, npass, imead_pass, cosm, lut)
             ! Only report the halo-model set-up for the first redshift
             HM_verbose = .false.
         end do
@@ -713,17 +682,15 @@
 
     end subroutine HMcode
 
-    subroutine HMcode_redshift(this, State, CAMB_Pk, j, npass, imead_pass, kh, cosm, lut)
+    subroutine HMcode_redshift(this, CAMB_Pk, j, npass, imead_pass, cosm, lut)
     ! Everything HMcode does for one redshift; cosm and lut are the caller's working space, so
     ! this can be called either serially or from a thread with its own private copies of them
     class(THalofit) :: this
-    class(CAMBdata) :: State
     type(MatterPowerData) :: CAMB_Pk
     integer, intent(in) :: j, npass, imead_pass(:)
-    real(dl), intent(in) :: kh(:)
     type(HM_cosmology) :: cosm
     type(HM_tables) :: lut
-    real(dl), allocatable :: p_den(:), plin_k(:)
+    real(dl), allocatable :: p_den(:) ! feedback-model denominator, used by the pass that follows it
     real(dl) :: z, k, p1h, p2h, pfull, plin
     integer :: i, ii, imead
 
@@ -738,14 +705,7 @@
     ! Sets the current redshift from the table
     z = CAMB_Pk%redshifts(j)
 
-    if (npass > 1) then
-        allocate(p_den(CAMB_Pk%num_k), plin_k(CAMB_Pk%num_k))
-        !$OMP PARALLEL DO IF(HM_par_inner()), DEFAULT(SHARED)
-        do i = 1, CAMB_Pk%num_k
-            plin_k(i) = p_lin(kh(i), z, 0, cosm)
-        end do
-        !$OMP END PARALLEL DO
-    end if
+    if (npass > 1) allocate(p_den(CAMB_Pk%num_k))
 
     do ii = 1, npass
         imead = imead_pass(ii)
@@ -753,18 +713,14 @@
         ! Initialisation for the halomodel calculation (needs to be done for each z).
         ! imead = 3,4,5 share everything except the halo concentration amplitude, so only the
         ! first pass of the feedback response model does the expensive set-up.
-        call this%halomod_init(imead, z, lut, cosm, State, reuse=ii > 1)
+        call this%halomod_init(imead, z, lut, cosm, reuse=ii > 1)
         if (global_error_flag /= 0) return
 
         ! Loop over k values and calculate P(k)
         !$OMP PARALLEL DO IF(HM_par_inner()), DEFAULT(SHARED), PRIVATE(k, plin, pfull, p1h, p2h)
         do i = 1, CAMB_Pk%num_k
-            k = kh(i)
-            if (npass > 1) then
-                plin = plin_k(i)
-            else
-                plin = p_lin(k, z, 0, cosm)
-            end if
+            k = exp(CAMB_Pk%log_kh(i))
+            plin = p_lin(k, z, 0, cosm)
             call this%halomod(k, p1h, p2h, pfull, plin, lut, cosm)
             if (npass == 1 .or. imead == 3) then
                 CAMB_Pk%nonlin_ratio(i, j) = sqrt(pfull/plin)
@@ -780,41 +736,40 @@
 
     end subroutine HMcode_redshift
 
-    function Delta_v(z, lut, cosm, State)
+    function Delta_v(z, lut, cosm)
     ! Function for the virialised overdensity
     real(dl) :: Delta_v
     real(dl), intent(in) :: z
     type(HM_cosmology), intent(in) :: cosm
     type(HM_tables), intent(in) :: lut
-    class(CAMBdata) :: State
 
     if (lut%imead == 1 .or. lut%imead == 2) then
         ! Mead et al. (2015; arXiv 1505.07833) value
-        Delta_v = 418*Omega_m_hm(z, cosm, State)**(-0.352_dl)
+        Delta_v = 418*Omega_m_hm(z, cosm)**(-0.352_dl)
         ! Mead et al. (2016; arXiv 1602.02154) neutrino addition
         if (lut%imead == 1) Delta_v = Delta_v*(1 + 0.916_dl*cosm%f_nu)
     else if (lut%imead == 0 .or. lut%imead == 3 .or. lut%imead == 4 .or. lut%imead == 5) then
-        Delta_v = Dv_Mead(z, cosm, State)
+        Delta_v = Dv_Mead(z, cosm)
     end if
 
     end function Delta_v
 
-    function delta_c(z, lut, cosm, State)
-    ! Function for the linear collapse density    
+    function delta_c(z, lut, cosm)
+    ! Function for the linear collapse density
     real(dl) :: delta_c
     real(dl), intent(in) :: z
     type(HM_cosmology), intent(in) :: cosm
     type(HM_tables), intent(in) :: lut
-    class(CAMBdata) :: State
+
     if (lut%imead == 1 .or. lut%imead == 2) then
         ! Mead et al. (2015; arXiv 1505.07833) value
         delta_c = 1.59 + 0.0314*log(lut%sig8z)
         if (lut%imead == 1) then
             delta_c = delta_c*(1. + 0.262*cosm%f_nu) ! Mead et al. (2016; arXiv 1602.02154) neutrino addition
-            delta_c = delta_c*(1. + 0.0123*log10(Omega_m_hm(z, cosm, State))) ! Nakamura & Suto (1997) LCDM fit
+            delta_c = delta_c*(1. + 0.0123*log10(Omega_m_hm(z, cosm))) ! Nakamura & Suto (1997) fitting formula for LCDM
         end if
     else if (lut%imead == 0 .or. lut%imead == 3 .or. lut%imead == 4 .or. lut%imead == 5) then
-        delta_c = dc_Mead(z, cosm, State)
+        delta_c = dc_Mead(z, cosm)
     end if
 
     end function delta_c
@@ -981,27 +936,16 @@
 
     end subroutine halomod
 
-    subroutine ensure_table_size(arr, n)
-    ! Allocate a work table once and only resize it if its required extent changes.
-    real(dl), allocatable, intent(inout) :: arr(:)
-    integer, intent(in) :: n
-
-    if (allocated(arr)) then
-        if (size(arr) == n) return
-        deallocate(arr)
-    end if
-    allocate(arr(n))
-
-    end subroutine ensure_table_size
-
     subroutine fill_table(min, max, arr, n)
     ! Fills array 'arr' in equally spaced intervals
     integer :: i
     real(dl), intent(in) :: min, max
-    real(dl), allocatable, intent(inout) :: arr(:)
+    real(dl), allocatable :: arr(:)
     integer, intent(in) :: n
 
-    call ensure_table_size(arr, n)
+    ! Allocate the array, and deallocate it if it is full
+    if (allocated(arr)) deallocate(arr)
+    allocate(arr(n))
 
     if (n == 1) then
         arr(1) = min
@@ -1019,7 +963,8 @@
     integer, intent(in) :: iz
     type(HM_cosmology) :: cosm
     integer :: i
-    real(dl) :: z, g, g2, k, Pk, Pkc
+    real(dl) :: z, g
+    real(dl), allocatable :: k(:), Pk(:), Pkc(:)
     real(dl), parameter :: pi = pi_HM
     real(dl), parameter :: kmin = kmin_pk_interpolation
     real(dl), parameter :: kmax = kmax_pk_interpolation
@@ -1032,44 +977,51 @@
 
     if (HM_verbose) write(*, *) 'LINEAR POWER: Filling linear power HM_tables'
 
+    ! Fill arrays
+    if (allocated(cosm%log_k_plin)) deallocate(cosm%log_k_plin)
+    if (allocated(cosm%log_plin)) deallocate(cosm%log_plin)
+    if (allocated(cosm%log_plinc)) deallocate(cosm%log_plinc)
+
     ! Fill a k-table with an equal-log-spaced k range (find_pk assumes this spacing)
     ! Note that the minimum should be such that the linear spectrum is accurately a power-law below this wavenumber
     cosm%nk = nk
     call fill_table(log(kmin), log(kmax), cosm%log_k_plin, nk)
-    call ensure_table_size(cosm%log_plin, nk)
-    call ensure_table_size(cosm%log_plinc, nk)
-    cosm%kmax = exp(cosm%log_k_plin(nk))
 
-    if (HM_verbose) write(*, *) 'LINEAR POWER: k_min:', exp(cosm%log_k_plin(1))
-    if (HM_verbose) write(*, *) 'LINEAR POWER: k_max:', cosm%kmax
+    allocate(k(nk))
+    k = exp(cosm%log_k_plin)
+    cosm%kmax = k(nk)
+
+    if (HM_verbose) write(*, *) 'LINEAR POWER: k_min:', k(1)
+    if (HM_verbose) write(*, *) 'LINEAR POWER: k_max:', k(nk)
     if (HM_verbose) write(*, *) 'LINEAR POWER: nk:', nk
+
+    allocate(Pk(nk), Pkc(nk))
 
     ! Find the redshift
     z = CAMB_PK%redshifts(iz)
     if (HM_verbose) write(*, *) 'LINEAR POWER: z of input:', z
-    g = grow(z, cosm)
-    g2 = g**2
-    cosm%grow_z = g
-    cosm%this_z = z
     index_cache = 1
     ! Fill power table, both cold- and all-matter
-    !$OMP PARALLEL DO IF(HM_par_inner() .and. nk>256), DEFAULT(SHARED), PRIVATE(k, Pk, Pkc), &
-    !$OMP FIRSTPRIVATE(index_cache), SCHEDULE(STATIC)
+    !$OMP PARALLEL DO IF(HM_par_inner() .and. nk>256), DEFAULT(SHARED), FIRSTPRIVATE(index_cache), SCHEDULE(STATIC)
     do i = 1, nk
         ! Take the power from the current redshift choice
-        k = exp(cosm%log_k_plin(i))
-        Pk = MatterPowerData_k(CAMB_PK, k, iz, index_cache)*(k**3/(2*pi**2))
-        ! Pk is zero if MatterPowerData_k flagged an error; skip the log and let the check below fire
-        if (Pk > 0) then
-            Pkc = Pk*Tcb_Tcbnu_ratio(k, z, cosm)**2
-            cosm%log_plin(i) = log(Pk/g2)
-            cosm%log_plinc(i) = log(Pkc/g2)
-        end if
+        Pk(i) = MatterPowerData_k(CAMB_PK, k(i), iz, index_cache)*(k(i)**3/(2*pi**2))
+        Pkc(i) = Pk(i)*Tcb_Tcbnu_ratio(k(i), z, cosm)**2
     end do
     if (global_error_flag /= 0) return
 
-    if (HM_verbose) write(*, *) 'LINEAR POWER: Delta2_min:', exp(cosm%log_plin(1))*g2
-    if (HM_verbose) write(*, *) 'LINEAR POWER: Delta2_max:', exp(cosm%log_plin(nk))*g2
+    if (HM_verbose) write(*, *) 'LINEAR POWER: Delta2_min:', Pk(1)
+    if (HM_verbose) write(*, *) 'LINEAR POWER: Delta2_max:', Pk(nk)
+
+    ! Calculate the growth factor at the redshift of interest
+    g = grow(z, cosm)
+    cosm%grow_z = g
+    cosm%this_z = z
+    allocate(cosm%log_plin(nk), cosm%log_plinc(nk))
+
+    ! Grow the power to z=0
+    cosm%log_plin = log(Pk/(g**2))
+    cosm%log_plinc = log(Pkc/(g**2))
     cosm%plin_iz = iz
 
     ! Check sigma_8 value
@@ -1150,13 +1102,7 @@
         cosm%om_b = CP%ombh2/h2
         cosm%om_nu = CP%omnuh2/h2
         cosm%om_v = State%Omega_de
-        cosm%use_camb_de = uses_camb_de(this%halofit_version)
-        if (.not. cosm%use_camb_de) then
-            call CP%DarkEnergy%Effective_w_wa(cosm%w, cosm%wa)
-        else
-            cosm%w = -1.0
-            cosm%wa = 0.0
-        end if
+        call CP%DarkEnergy%Effective_w_wa(cosm%w, cosm%wa)
         cosm%f_nu = cosm%om_nu/cosm%om_m
         cosm%h = CP%H0/100
         cosm%Tcmb = CP%TCMB
@@ -1166,7 +1112,7 @@
         ! scaled to other redshifts by the scale-independent growth factor, so it only needs extracting
         ! once when growth is nearly scale-independent (small neutrino fraction) and the dark energy
         ! model does not itself introduce scale-dependent growth. Otherwise re-extract it at each redshift.
-        use_wiggle = is_mead2020(this%halofit_version) .or. is_mead2020_feedback(this%halofit_version)
+        use_wiggle = this%halofit_version == halofit_mead2020 .or. this%halofit_version == halofit_mead2020_feedback
         cosm%wiggle_once = use_wiggle .and. cosm%f_nu < this%HMcode_wiggle_max_fnu .and. &
             CP%DarkEnergy%assume_scale_indep_lowz_growth()
         cosm%wiggle_each_z = use_wiggle .and. .not. cosm%wiggle_once
@@ -1176,7 +1122,7 @@
     if (this%halofit_version == halofit_mead2015 .or. this%halofit_version == halofit_mead2016) then
         cosm%A_baryon = this%HMcode_A_baryon
         cosm%eta_baryon = this%HMcode_eta_baryon
-    else if (is_mead2020_feedback(this%halofit_version)) then
+    else if (this%halofit_version == halofit_mead2020_feedback) then
         cosm%logT_AGN = this%HMcode_logT_AGN
     end if
 
@@ -1188,7 +1134,6 @@
     if (HM_verbose) write(*, *) 'HM_cosmology: Om_v:', cosm%om_v
     if (HM_verbose) write(*, *) 'HM_cosmology: w_0:', cosm%w
     if (HM_verbose) write(*, *) 'HM_cosmology: w_a:', cosm%wa
-    if (HM_verbose) write(*, *) 'HM_cosmology: active CAMB DE background:', cosm%use_camb_de
     if (HM_verbose) write(*, *) 'HM_cosmology: f_nu:', cosm%f_nu
     if (HM_verbose) write(*, *) 'HM_cosmology: n_s:', cosm%ns
     if (HM_verbose) write(*, *) 'HM_cosmology: h:', cosm%h
@@ -1197,7 +1142,7 @@
     if (HM_verbose .and. (this%halofit_version == halofit_mead2015 .or. this%halofit_version == halofit_mead2016)) then
         write(*, *) 'HM_cosmology: A_baryon:', cosm%A_baryon
         write(*, *) 'HM_cosmology: eta_baryon:', cosm%eta_baryon
-    else if (HM_verbose .and. is_mead2020_feedback(this%halofit_version)) then
+    else if (HM_verbose .and. this%halofit_version == halofit_mead2020_feedback) then
         write(*, *) 'HM_cosmology: log10(T_AGN/K):', cosm%logT_AGN
     end if
     if (HM_verbose) write(*, *)
@@ -1224,36 +1169,25 @@
 
     end subroutine initialise_HM_cosmology
 
-    subroutine allocate_LUT(lut, n, new_mass_grid)
+    subroutine allocate_LUT(lut, n)
     ! Allocates memory for the HMcode look-up HM_tables. Nothing is initialised here: every
     ! array and cached scalar is fully overwritten before use, by halomod_tables/fill_conc (once
     ! per redshift) or by halomod_init immediately afterwards; the feedback-only fields
     ! (baryon_mass_fraction, f_star_hm) are only ever read by the imead variant that fills them.
     type(HM_tables) :: lut
     integer, intent(in) :: n
-    logical, intent(out) :: new_mass_grid
 
-    new_mass_grid = .false.
-    if (allocated(lut%zc)) then
-        if (size(lut%zc) /= n) then
-            deallocate(lut%zc, lut%m, lut%c, lut%rv, lut%rs, lut%nfw_norm, lut%nfw_moment2)
-            deallocate(lut%nu, lut%rr, lut%sigf, lut%sig)
-            deallocate(lut%p1h_quad_weight, lut%nu_eta, lut%baryon_mass_fraction)
-        end if
-    end if
     if (.not. allocated(lut%zc)) then
         lut%n = n
-        allocate(lut%zc(n), lut%m(n), lut%c(n), lut%rv(n), lut%rs(n), lut%nfw_norm(n), lut%nfw_moment2(n))
+        allocate(lut%zc(n), lut%m(n), lut%c(n), lut%rv(n), lut%rs(n), lut%nfw_norm(n))
         allocate(lut%nu(n), lut%rr(n), lut%sigf(n), lut%sig(n))
-        allocate(lut%p1h_quad_weight(n), lut%nu_eta(n), lut%baryon_mass_fraction(n))
-        new_mass_grid = .true.
+        allocate(lut%p1h_weight(n), lut%nu_eta(n), lut%baryon_mass_fraction(n))
     end if
 
     end subroutine allocate_LUT
 
-    subroutine halomod_init(this, imead, z, lut, cosm, State, reuse)
+    subroutine halomod_init(this, imead, z, lut, cosm, reuse)
     class(THalofit) :: this
-    class(CAMBdata) :: State
     ! Halo-model initialisation routine
     ! Computes look-up HM_tables necessary for the halo model calculations
     integer, intent(in) :: imead
@@ -1271,7 +1205,7 @@
     lut%z = z
 
     if (.not. DefaultFalse(reuse)) then
-        call halomod_tables(this, z, lut, cosm, State)
+        call halomod_tables(this, z, lut, cosm)
         if (global_error_flag /= 0) return
     end if
 
@@ -1284,7 +1218,6 @@
     lut%kstar_hm = this%kstar(lut)
     lut%fdamp_hm = this%fdamp(lut)
     lut%alpha_hm = this%alpha(lut)
-    if (lut%imead == 3) lut%kdamp_hm = 0.05699_dl*lut%sig8z_cold**(-1.089_dl)
     lut%one_minus_fnu_sq = (1._dl - cosm%f_nu)**2
     lut%nu_eta = lut%nu**lut%eta_hm
     if (lut%imead == 5) then
@@ -1305,13 +1238,12 @@
     if (HM_verbose) write(*, *) 'HALOMOD: c max [Msun/h]:', lut%c(1)
     if (HM_verbose) write(*, *) 'HALOMOD: Done'
     if (HM_verbose) write(*, *)
-    if (HM_verbose) call this%write_parameters(z, lut, cosm, State)
+    if (HM_verbose) call this%write_parameters(z, lut, cosm)
 
     end subroutine halomod_init
 
-    subroutine halomod_tables(this, z, lut, cosm, State)
+    subroutine halomod_tables(this, z, lut, cosm)
     class(THalofit) :: this
-    class(CAMBdata) :: State
     ! Fills the look-up tables for the halo model at redshift z that do not depend on the
     ! halo concentration amplitude (see halomod_init)
     real(dl), intent(in) :: z
@@ -1320,7 +1252,6 @@
     integer :: i, nm
     real(dl) :: Dv, dc, m, nu, r, sig, mmin, mmax
     real(dl), parameter :: f_Bullock = 0.01_dl**(1/3._dl)
-    logical :: new_mass_grid
 
     if (HM_verbose) write(*, *) 'HALOMOD: Filling look-up HM_tables'
     if (HM_verbose) write(*, *) 'HALOMOD: HM_tables being filled at redshift:', z
@@ -1345,46 +1276,37 @@
     end if
     if (global_error_flag /= 0) return
 
-    call allocate_LUT(lut, nm, new_mass_grid)
+    call allocate_LUT(lut, nm)
 
     if (HM_verbose) write(*, *) 'HALOMOD: M_min [log10(Msun/h)]:', log10(mmin)
     if (HM_verbose) write(*, *) 'HALOMOD: M_max [log10(Msun/h)]:', log10(mmax)
 
-    dc = this%delta_c(z, lut, cosm, State)
+    dc = this%delta_c(z, lut, cosm)
     lut%dc = dc
 
     !$OMP PARALLEL DO IF(HM_par_inner()), DEFAULT(SHARED), PRIVATE(m, r, sig, nu)
     do i = 1, lut%n
 
-        if (new_mass_grid) then
-            lut%m(i) = exp(log(mmin) + log(mmax/mmin)*real(i - 1, dl)/(lut%n - 1))
-            lut%rr(i) = radius_m(lut%m(i), cosm)
-        end if
-        m = lut%m(i)
-        r = lut%rr(i)
+        m = exp(log(mmin) + log(mmax/mmin)*real(i - 1, dl)/(lut%n - 1))
+        r = radius_m(m, cosm)
         sig = sigma_lut(r, z, cosm)
         nu = dc/sig
 
+        lut%m(i) = m
+        lut%rr(i) = r
         lut%sig(i) = sig
         lut%nu(i) = nu
         lut%sigf(i) = sigma_lut(r*f_Bullock, z, cosm)
+        lut%p1h_weight(i) = gnu(nu)*m
 
     end do
     !$OMP END PARALLEL DO
     if (global_error_flag /= 0) return
 
-    ! Fold the trapezium-rule intervals into per-node weights once per redshift.
-    lut%p1h_quad_weight(1) = 0.5_dl*gst(lut%nu(1))*lut%m(1)*(lut%nu(2) - lut%nu(1))
-    do i = 2, lut%n - 1
-        lut%p1h_quad_weight(i) = 0.5_dl*gst(lut%nu(i))*lut%m(i)*(lut%nu(i + 1) - lut%nu(i - 1))
-    end do
-    lut%p1h_quad_weight(lut%n) = &
-        0.5_dl*gst(lut%nu(lut%n))*lut%m(lut%n)*(lut%nu(lut%n) - lut%nu(lut%n - 1))
-
     if (HM_verbose) write(*, *) 'HALOMOD: m, r, nu, sig, sigf HM_tables filled'
 
     ! Fill virial radius table using real radius table
-    Dv = this%Delta_v(z, lut, cosm, State)
+    Dv = this%Delta_v(z, lut, cosm)
     lut%rv = lut%rr/(Dv**(1/3._dl))
 
     if (HM_verbose) write(*, *) 'HALOMOD: rv HM_tables filled'
@@ -1408,7 +1330,7 @@
     if (HM_verbose) write(*, *) 'HALOMOD: n_eff:', lut%neff
 
     ! Get the halo collapse redshifts and the Dolag (2004) dark-energy correction
-    call this%conc_bull(z, lut, cosm, State)
+    call this%conc_bull(z, lut, cosm)
 
     end subroutine halomod_tables
 
@@ -1432,14 +1354,12 @@
         ! Scale radius and profile normalisation, cached since win() is called at every k
         lut%rs(i) = lut%rv(i)/c
         lut%nfw_norm(i) = 1/(log(1 + c) - c/(1 + c))
-        lut%nfw_moment2(i) = 0.5_dl*c*c - 2._dl*c + 3._dl*log(1._dl + c) - c/(1._dl + c)
     end do
 
     end subroutine fill_conc
 
-    subroutine write_parameters(this, z, lut, cosm, State)
+    subroutine write_parameters(this, z, lut, cosm)
     class(THalofit) :: this
-    class(CAMBdata) :: State
     ! This subroutine writes out the halomodel parameters at the current redshift
     real(dl), intent(in) :: z
     type(HM_cosmology), intent(in) :: cosm
@@ -1448,8 +1368,8 @@
     if (HM_verbose) write(*, *) 'WRITE_PARAMETERS: at this redshift'
     if (HM_verbose) write(*, *) '=================================='
     if (HM_verbose) write(*, fmt='(A10,F10.5)') 'z:', z
-    if (HM_verbose) write(*, fmt='(A10,F10.5)') 'Dv:', this%Delta_v(z, lut, cosm, State)
-    if (HM_verbose) write(*, fmt='(A10,F10.5)') 'dc:', this%delta_c(z, lut, cosm, State)
+    if (HM_verbose) write(*, fmt='(A10,F10.5)') 'Dv:', this%Delta_v(z, lut, cosm)
+    if (HM_verbose) write(*, fmt='(A10,F10.5)') 'dc:', this%delta_c(z, lut, cosm)
     if (HM_verbose) write(*, fmt='(A10,F10.5)') 'eta:', this%eta(lut, cosm)
     if (HM_verbose) write(*, fmt='(A10,F10.5)') 'k*:', this%kstar(lut)
     if (HM_verbose) write(*, fmt='(A10,F10.5)') 'A:', this%As(lut, cosm)
@@ -1505,9 +1425,8 @@
 
     end function neff
 
-    subroutine conc_bull(this, z, lut, cosm, State)
+    subroutine conc_bull(this, z, lut, cosm)
     class(THalofit) :: this
-    class(CAMBdata) :: State
     ! Sets up the Bullock et al. (2001) concentration-mass relation: fills the collapse redshift
     ! table and caches the Dolag (2004) dark-energy corrections. The concentrations themselves are
     ! then filled by fill_conc, which is all that has to be redone if only the amplitude A changes.
@@ -1519,7 +1438,7 @@
     real(dl), parameter :: zinf = zc_Dolag
 
     ! Fill the collapse time look-up table
-    call this%zcoll_bull(z, cosm, lut, State)
+    call this%zcoll_bull(z, cosm, lut)
 
     lut%dolag_inf = 1
     lut%dolag_z = 1
@@ -1541,8 +1460,6 @@
         cosm_lcdm%w = -1.
         cosm_lcdm%wa = 0.
         cosm_lcdm%om_v = 1. - cosm%om_m ! Enforce flatness
-        ! Keep the matched reference model on its own analytic Lambda-CDM background.
-        cosm_lcdm%use_camb_de = .false.
 
         ! Needs to use grow_int explicitly here for LCDM model to avoid growth HM_tables
         ginf_lcdm = growint(zinf, cosm_lcdm)
@@ -1613,9 +1530,8 @@
 
     end function growint_integrand
 
-    subroutine zcoll_bull(this, z, cosm, lut, State)
+    subroutine zcoll_bull(this, z, cosm, lut)
     class(THalofit) :: this
-    class(CAMBdata) :: State
     ! Calculates the halo collapse redshift according to the Bullock (2001) prescription
     real(dl), intent(in) :: z
     type(HM_cosmology) :: cosm
@@ -1629,7 +1545,7 @@
     ! Needs to interpolate g(z) which should be pretty linear for a<0.05
     ! in 'g(a) vs a' space for all standard cosmologies
 
-    dc = this%delta_c(z, lut, cosm, State)
+    dc = this%delta_c(z, lut, cosm)
 
     ! Find the growth function at the current redshift
     growz = grow(z, cosm)
@@ -1759,8 +1675,7 @@
     ! Calculates the 2-halo term
     real(dl) :: p_2h
     real(dl), intent(in) :: k, plin
-    real(dl) :: sigv, frac, x
-    real(dl), parameter :: ndamp = 2.85_dl
+    real(dl) :: sigv, frac, kdamp, ndamp, x
     type(HM_tables), intent(in) :: lut
     type(HM_cosmology), intent(in) :: cosm
 
@@ -1774,7 +1689,9 @@
         sigv = lut%sigv
         p_2h = plin*(1. - frac*(tanh(k*sigv/sqrt(abs(frac))))**2)
     else if (lut%imead == 3) then
-        x = (k/lut%kdamp_hm)**ndamp
+        kdamp = 0.05699*lut%sig8z_cold**(-1.089)
+        ndamp = 2.85
+        x = (k/kdamp)**ndamp
         p_2h = p_dewiggle(k, lut%z, plin, lut%sigv, cosm)*(1. - frac*x/(1. + x))
     end if
 
@@ -1790,18 +1707,20 @@
     type(HM_tables), intent(in) :: lut
     type(HM_cosmology), intent(in) :: cosm
     real(dl) :: fac, ks, x
-    real(dl) :: sum, wk
+    real(dl) :: g0, g1, sum
     integer :: i
     real(dl), parameter :: pi = pi_HM
 
-    ! Trapezium rule over nu; the redshift-only node weights were cached by halomod_tables.
+    ! Trapezium rule over nu, accumulated as the (expensive) halo windows are evaluated
+    ! (the integral is linear, so scale the result rather than the integrand)
     sum = 0
-    do i = 1, lut%n
-        wk = win(k*lut%nu_eta(i), lut%rs(i), lut%c(i), lut%nfw_norm(i), lut%nfw_moment2(i))
-        if (lut%imead == 5) wk = wk*lut%baryon_mass_fraction(i) + lut%f_star_hm
-        sum = sum + lut%p1h_quad_weight(i)*wk*wk
+    g1 = integrand(1)
+    do i = 2, lut%n
+        g0 = g1
+        g1 = integrand(i)
+        sum = sum + (g0 + g1)*(lut%nu(i) - lut%nu(i - 1))
     end do
-    sum = sum/cosmic_density(cosm)
+    sum = sum/(2*cosmic_density(cosm))
     if (lut%imead == 3 .or. lut%imead == 4) sum = sum*lut%one_minus_fnu_sq
 
     ! Numerical factors to convert from P(k) to Delta^2(k)
@@ -1823,6 +1742,19 @@
         x = (k/ks)**4
         p_1h = p_1h*x/(1. + x)
     end if
+
+    contains
+
+    real(dl) function integrand(i)
+    ! The one-halo integrand at the i'th mass point, without the constant factors
+    integer, intent(in) :: i
+    real(dl) :: wk
+
+    wk = win(k*lut%nu_eta(i), lut%rs(i), lut%c(i), lut%nfw_norm(i))
+    if (lut%imead == 5) wk = wk*lut%baryon_mass_fraction(i) + lut%f_star_hm
+    integrand = lut%p1h_weight(i)*wk**2
+
+    end function integrand
 
     end function p_1h
 
@@ -1883,7 +1815,8 @@
     if (HM_verbose) write(*, *) 'INIT_WIGGLE: Isolating wiggle'
 
     ! Isolate the wiggle in the look-up table (log_k_wiggle was filled above)
-    call ensure_table_size(cosm%pk_wiggle, nk)
+    if (allocated(cosm%pk_wiggle)) deallocate(cosm%pk_wiggle)
+    allocate(cosm%pk_wiggle(nk))
     cosm%pk_wiggle = Pk - Pk_smooth
 
     if (HM_verbose) then
@@ -2046,6 +1979,7 @@
     ! This wouldn't be appropriate for models with a small-scale linear spectrum cut-off (e.g., WDM)
     integer :: i
     type(HM_cosmology), intent(inout) :: cosm
+    real(dl), allocatable :: r(:), sig(:)
     integer :: itype
     real(dl), parameter :: rmin = rmin_sigma_interpolation
     real(dl), parameter :: rmax = rmax_sigma_interpolation
@@ -2061,8 +1995,10 @@
     ! These values of 'r' work fine for any power spectrum of cosmological importance
     ! Fill log(R) directly (rather than as log(r)) so that it is exactly equally spaced,
     ! as assumed by interp_cubic_uniform
+    if (allocated(cosm%log_sigma)) deallocate(cosm%log_sigma)
     call fill_table(log(rmin), log(rmax), cosm%log_r_sigma, nsig)
-    call ensure_table_size(cosm%log_sigma, nsig)
+    allocate(r(nsig), sig(nsig))
+    r = exp(cosm%log_r_sigma)
 
     if (HM_verbose) write(*, *) 'SIGTAB: Filling sigma interpolation table'
     if (HM_verbose) write(*, *) 'SIGTAB: R_min:', rmin
@@ -2072,14 +2008,16 @@
     ! Cost per point varies a lot with R (adaptive integration), so balance dynamically
     !$OMP PARALLEL DO IF(HM_par_inner()), DEFAULT(SHARED), SCHEDULE(DYNAMIC)
     do i = 1, nsig
-        cosm%log_sigma(i) = log(sigma_integral(exp(cosm%log_r_sigma(i)), 0.d0, itype, cosm))
+        sig(i) = sigma_integral(r(i), 0.d0, itype, cosm)
     end do
     !$OMP END PARALLEL DO
 
-    if (HM_verbose) write(*, *) 'SIGTAB: sigma_min:', exp(cosm%log_sigma(nsig))
-    if (HM_verbose) write(*, *) 'SIGTAB: sigma_max:', exp(cosm%log_sigma(1))
+    if (HM_verbose) write(*, *) 'SIGTAB: sigma_min:', sig(nsig)
+    if (HM_verbose) write(*, *) 'SIGTAB: sigma_max:', sig(1)
 
     cosm%nsig = nsig
+    allocate(cosm%log_sigma(nsig))
+    cosm%log_sigma = log(sig)
 
     if (HM_verbose) write(*, *) 'SIGTAB: Done'
     if (HM_verbose) write(*, *)
@@ -2300,43 +2238,39 @@
 
     end function integrate
 
-    function win(k, rs, c, norm, moment2)
+    function win(k, rs, c, norm)
     ! The halo window function (k-space halo profile): the analytic Fourier transform of the
     ! NFW profile of scale radius rs and concentration c, normalised so that W(k->0)=1.
     ! norm is 1/(log(1+c)-c/(1+c)), the reciprocal of the halo mass in units of 4*pi*rho_n*rs^3,
     ! where rho_n is the profile normalisation [i.e. rho=rho_n/((r/rs)*(1+r/rs)^2]
     real(dl) :: win
-    real(dl), intent(in) :: k, rs, c, norm, moment2
-    real(dl) :: si1, si2, ci1, ci2, sin1, sin2, cos1, cos2, ks, ks2
+    real(dl), intent(in) :: k, rs, c, norm
+    real(dl) :: si1, si2, ci1, ci2, ks, ks2
 
     ks = k*rs
     ks2 = (1 + c)*ks
 
-    ! The small-k expansion is the second radial moment of the NFW profile. Its
-    ! parameter is k*r_vir=c*ks; below 0.2 the pointwise fourth-order remainder is
-    ! bounded by (k*r_vir)^4/120 < 1.4e-5, safely below the HMcode accuracy target.
-    if (c*ks < 0.2_dl) then
-        win = 1._dl - ks*ks*moment2*norm/6._dl
-        ! At large arguments SiCi already evaluates the sine and cosine needed below.
-        ! Return those values and get sin(c*ks)=sin(ks2-ks) by angle subtraction, avoiding
-        ! three otherwise redundant trigonometric calls in the common high-k branch.
-    else if (ks2 > 4._dl) then
-        sin1 = sin(ks); cos1 = cos(ks)
-        sin2 = sin(ks2); cos2 = cos(ks2)
-        call SiCi(ks, si1, ci1, sin1, cos1)
-        call SiCi(ks2, si2, ci2, sin2, cos2)
-        win = (cos1*(ci2 - ci1) + sin1*(si2 - si1) - (sin2*cos1 - cos2*sin1)/ks2)*norm
-    else
-        call SiCi(ks, si1, ci1)
-        call SiCi(ks2, si2, ci2)
-        win = (cos(ks)*(ci2 - ci1) + sin(ks)*(si2 - si1) - sin(c*ks)/ks2)*norm
-    end if
+    ! Sine and cosine integrals (computed in pairs since they share most of their work)
+    call SiCi(ks, si1, ci1)
+    call SiCi(ks2, si2, ci2)
+
+    win = (cos(ks)*(ci2 - ci1) + sin(ks)*(si2 - si1) - sin(c*ks)/ks2)*norm
 
     ! Correct for the case of disasters (a bit sloppy, not sure if this is ever used)
     if (win > 1._dl) win = 1._dl
     if (win < 0._dl) win = 0._dl
 
     end function win
+
+    function gnu(nu)
+    ! Select the mass function
+    real(dl) :: gnu
+    real(dl), intent(in) :: nu
+
+    ! Sheth & Torman (1999)
+    gnu = gst(nu)
+
+    end function gnu
 
     function gst(nu)
     ! Sheth & Tormen (1999) mass function!
@@ -2355,99 +2289,73 @@
 
     end function gst
 
-    function Hubble2(z, cosm, State)
+    function Hubble2(z, cosm)
     ! This calculates the dimensionless squared hubble parameter at redshift z (H/H_0)^2!
     ! Ignores contributions from radiation (not accurate at high z, but consistent with simulations)!
     real(dl) :: Hubble2
     real(dl), intent(in) :: z
     type(HM_cosmology), intent(in) :: cosm
-    class(CAMBdata), optional :: State
 
-    Hubble2 = cosm%om_m*(1 + z)**3 + cosm%om_v*X_de(z, cosm, State) + &
-        (1 - cosm%om_m - cosm%om_v)*(1 + z)**2
+    Hubble2 = cosm%om_m*(1 + z)**3 + cosm%om_v*X_de(z, cosm) + (1 - cosm%om_m - cosm%om_v)*(1 + z)**2
 
     end function Hubble2
 
-    function AH(z, cosm, State)
+    function AH(z, cosm)
     ! The Hubble acceleration function \ddot{a}/a
     real(dl) :: AH
     real(dl), intent(in) :: z
     type(HM_cosmology), intent(in) :: cosm
-    class(CAMBdata), optional :: State
 
-    AH = cosm%om_m*(1 + z)**3 + cosm%om_v*(1. + 3.*w_de_hm(z, cosm, State))*X_de(z, cosm, State)
+    AH = cosm%om_m*(1 + z)**3 + cosm%om_v*(1. + 3.*w_de_hm(z, cosm))*X_de(z, cosm)
     AH = -AH/2.
 
     end function AH
 
-    function X_de(z, cosm, State)
+    function X_de(z, cosm)
     ! The time evolution for dark energy: rho_de=rho_de,0 * X(a)
     ! X(a) = 1 for LCDM but changes for other models
     real(dl) :: X_de
     real(dl), intent(in) :: z
     type(HM_cosmology), intent(in) :: cosm
-    class(CAMBdata), optional :: State
-    real(dl) :: a, grhov_t
+    real(dl) :: a
 
     a = 1./(1. + z)
-    if (cosm%use_camb_de) then
-        if (.not. present(State)) error stop 'X_DE: CAMBdata is required for the active dark-energy background'
-        if (State%grhov == 0._dl) then
-            X_de = 1._dl
-        else
-            call State%CP%DarkEnergy%BackgroundDensityAndPressure(State%grhov, a, grhov_t)
-            X_de = grhov_t/(State%grhov*a*a)
-        end if
-    else
-        X_de = (a**(-3*(1 + cosm%w + cosm%wa)))*exp(-3*cosm%wa*(1 - a))
-    end if
+    X_de = (a**(-3*(1 + cosm%w + cosm%wa)))*exp(-3*cosm%wa*(1 - a))
 
     end function X_de
 
-    function w_de_hm(z, cosm, State)
+    function w_de_hm(z, cosm)
 
     ! The dark energy w(a) function
     real(dl) :: w_de_hm
     real(dl), intent(in) :: z
     type(HM_cosmology), intent(in) :: cosm
-    class(CAMBdata), optional :: State
-    real(dl) :: a, grhov_t
+    real(dl) :: a
 
     a = 1./(1. + z)
-    if (cosm%use_camb_de) then
-        if (.not. present(State)) error stop 'W_DE_HM: CAMBdata is required for the active dark-energy background'
-        if (State%grhov == 0._dl) then
-            w_de_hm = -1._dl
-        else
-            call State%CP%DarkEnergy%BackgroundDensityAndPressure(State%grhov, a, grhov_t, w_de_hm)
-        end if
-    else
-        w_de_hm = cosm%w + (1 - a)*cosm%wa
-    end if
+    w_de_hm = cosm%w + (1 - a)*cosm%wa
 
     end function w_de_hm
 
-    function Omega_m_hm(z, cosm, State)
+    function Omega_m_hm(z, cosm)
     ! This calculates omega_m variations with z!
     real(dl) :: Omega_m_hm
     real(dl), intent(in) :: z
     real(dl) :: om_m
     type(HM_cosmology), intent(in) :: cosm
-    class(CAMBdata), optional :: State
 
     om_m = cosm%om_m
-    Omega_m_hm = (om_m*(1 + z)**3)/Hubble2(z, cosm, State)
+    Omega_m_hm = (om_m*(1 + z)**3)/Hubble2(z, cosm)
 
     end function Omega_m_hm
 
-    function Omega_cold_hm(z, cosm, State)
+    function Omega_cold_hm(z, cosm)
     ! This calculates omega_cold variations with z (no neutrinos)
     real(dl) :: Omega_cold_hm
     real(dl), intent(in) :: z
     type(HM_cosmology), intent(in) :: cosm
-    class(CAMBdata), optional :: State
 
-    Omega_cold_hm = ((cosm%om_c + cosm%om_b)*(1 + z)**3)/Hubble2(z, cosm, State)
+    Omega_cold_hm = ((cosm%om_c + cosm%om_b)*(1 + z)**3)/Hubble2(z, cosm)
 
     end function Omega_cold_hm
 
@@ -2555,16 +2463,15 @@
 
     end function neff_integrand
 
-    subroutine SiCi(x, Six, Cix, sinx, cosx)
+    subroutine SiCi(x, Six, Cix)
 
     ! Calculates the 'sine integral' Si(x) and 'cosine integral' Ci(x) together
     ! The large-x expansions share the same auxiliary functions f and g, so are done once
     real(dl), intent(in) :: x
     real(dl), intent(out) :: Six, Cix
-    real(dl), intent(in), optional :: sinx, cosx
-    real(dl) :: x2, y, f, g, sin_x, cos_x
+    real(dl) :: x2, y, f, g, sinx, cosx
     real(dl), parameter :: em_const = 0.577215664901532861d0
-    real(dl), parameter :: x0 = 4.d0 ! Transition between two different approximations
+    real(dl), parameter :: x0 = 4. ! Transition between two different approximations
 
     ! Expansions for high and low x thieved from Wikipedia, two different expansions for above and below 4.
     if (abs(x) <= x0) then
@@ -2606,16 +2513,11 @@
             + y*(2.23355543278099360d9 + y*(7.87465017341829930d10 + y*(1.39866710696414565d12 &
             + y*(1.17164723371736605d13 + y*(4.01839087307656620d13 + y*(3.99653257887490811d13))))))))))
 
-        if (present(sinx) .and. present(cosx)) then
-            sin_x = sinx
-            cos_x = cosx
-        else
-            sin_x = sin(x)
-            cos_x = cos(x)
-        end if
+        sinx = sin(x)
+        cosx = cos(x)
 
-        Six = pi_HM/2.d0 - f*cos_x - g*sin_x
-        Cix = f*sin_x - g*cos_x
+        Six = pi_HM/2.d0 - f*cosx - g*sinx
+        Cix = f*sinx - g*cosx
 
     end if
 
@@ -2783,10 +2685,9 @@
 
     end subroutine fit_cubic
 
-    subroutine fill_growtab(cosm, State)
+    subroutine fill_growtab(cosm)
     ! Fills a table of values of the scale-independent growth function
     type(HM_cosmology) :: cosm
-    class(CAMBdata) :: State
     integer :: i
     real(dl), parameter :: amin = amin_growth_interpolation
     real(dl), parameter :: amax = amax_growth_interpolation
@@ -2797,10 +2698,11 @@
     cosm%ng = n
     call fill_table(amin, amax, cosm%a_growth, n)
     if (amax /= 1) error stop 'FILL_GROWTAB: the growth table must end at a=1 to normalise there'
-    call ensure_table_size(cosm%growth, n)
+    if (allocated(cosm%growth)) deallocate(cosm%growth)
+    allocate(cosm%growth(n))
 
     if (HM_verbose) write(*, *) 'GROWTH: Solving growth equation'
-    call solve_growth_ODE(cosm, cosm%a_growth, cosm%growth, State)
+    call solve_growth_ODE(cosm, cosm%a_growth, cosm%growth)
     if (HM_verbose) write(*, *) 'GROWTH: ODE done'
 
     ! Normalise so that g(z=0)=1
@@ -2809,7 +2711,8 @@
     cosm%growth = cosm%growth/cosm%gnorm
 
     ! Table integration to calculate G(a)=int_0^a g(a')/a' da'
-    call ensure_table_size(cosm%agrow, n)
+    if (allocated(cosm%agrow)) deallocate(cosm%agrow)
+    allocate(cosm%agrow(n))
 
     ! Each interval contributes the same however far the integral goes, so accumulate them.
     ! The missing section below a_growth(1): g(a=0)/0 = 1, so just add a rectangle of height g*a/a=g
@@ -2825,12 +2728,11 @@
 
     end subroutine fill_growtab
 
-    subroutine solve_growth_ODE(cosm, a, d, State)
+    subroutine solve_growth_ODE(cosm, a, d)
     ! Solves the linear growth ODE for d(a) at the increasing output points a(:), by RK4 with
     ! nsub_growth_ODE steps per output interval. In matter domination d is proportional to a,
     ! which RK4 integrates exactly, so a fixed step in a is accurate even at early times.
     type(HM_cosmology), intent(in) :: cosm
-    class(CAMBdata) :: State
     real(dl), intent(in) :: a(:)
     real(dl), intent(out) :: d(:)
     real(dl) :: x, v, t, h, f
@@ -2840,14 +2742,14 @@
     ! AM Jul 19: changed initial conditions to be appropriate for massive neutrino cosmologies
     ! AM Sep 20: changed initial conditions to assume neutrinos cluster, but changed to take into account EDE
     t = aini_growth_ODE
-    f = 1. - Omega_m_hm(-1. + 1./t, cosm, State)
+    f = 1. - Omega_m_hm(-1. + 1./t, cosm)
     x = t**(1. - 3.*f/5.)
     v = (1. - 3.*f/5.)*t**(-3.*f/5.)
 
     do i = 1, size(a)
         h = (a(i) - t)/nsub_growth_ODE
         do j = 1, nsub_growth_ODE
-            call rk4_growth_step(x, v, t, h, cosm, State)
+            call rk4_growth_step(x, v, t, h, cosm)
         end do
         t = a(i) ! the accumulated t can differ in the last bits
         d(i) = x
@@ -2855,22 +2757,21 @@
 
     end subroutine solve_growth_ODE
 
-    subroutine rk4_growth_step(d, v, a, h, cosm, State)
+    subroutine rk4_growth_step(d, v, a, h, cosm)
     ! One 4th-order Runge-Kutta step of the growth ODE d''(a) = fv(d,d',a), with v = d'
     real(dl), intent(inout) :: d, v, a
     real(dl), intent(in) :: h
     type(HM_cosmology), intent(in) :: cosm
-    class(CAMBdata) :: State
     real(dl) :: kd1, kd2, kd3, kd4, kv1, kv2, kv3, kv4
 
     kd1 = h*v
-    kv1 = h*fv(d, v, a, cosm, State)
+    kv1 = h*fv(d, v, a, cosm)
     kd2 = h*(v + kv1/2)
-    kv2 = h*fv(d + kd1/2, v + kv1/2, a + h/2, cosm, State)
+    kv2 = h*fv(d + kd1/2, v + kv1/2, a + h/2, cosm)
     kd3 = h*(v + kv2/2)
-    kv3 = h*fv(d + kd2/2, v + kv2/2, a + h/2, cosm, State)
+    kv3 = h*fv(d + kd2/2, v + kv2/2, a + h/2, cosm)
     kd4 = h*(v + kv3)
-    kv4 = h*fv(d + kd3, v + kv3, a + h, cosm, State)
+    kv4 = h*fv(d + kd3, v + kv3, a + h, cosm)
 
     d = d + (kd1 + 2*kd2 + 2*kd3 + kd4)/6
     v = v + (kv1 + 2*kv2 + 2*kv3 + kv4)/6
@@ -2878,36 +2779,34 @@
 
     end subroutine rk4_growth_step
 
-    function fv(d, v, a, cosm, State)
+    function fv(d, v, a, cosm)
 
     ! d'' as a function of the growth d, its derivative v=d' and the scale factor
     real(dl) :: fv
     real(dl), intent(in) :: d, v, a
     real(dl) :: f1, f2, z, Om_m
     type(HM_cosmology), intent(in) :: cosm
-    class(CAMBdata) :: State
 
     z = -1. + (1./a)
 
     ! AM Jul 19: changed Omega_m to Omega_cold for massive neutrino cosmologies
     if (cold_growth) then
-        Om_m = Omega_cold_hm(z, cosm, State)
+        Om_m = Omega_cold_hm(z, cosm)
     else
-        Om_m = Omega_m_hm(z, cosm, State)
+        Om_m = Omega_m_hm(z, cosm)
     end if
     f1 = 3.*Om_m*d/(2.*a**2)
-    f2 = (2. + AH(z, cosm, State)/Hubble2(z, cosm, State))*(v/a)
+    f2 = (2. + AH(z, cosm)/Hubble2(z, cosm))*(v/a)
 
     fv = f1 - f2
 
     end function fv
 
-    subroutine Mead_growth_terms(z, cosm, x, y, Om_m, State)
+    subroutine Mead_growth_terms(z, cosm, x, y, Om_m)
 
     ! Growth terms shared by the Mead (2017; 1606.05345) delta_c and Delta_v fitting functions
     real(dl), intent(in) :: z
     type(HM_cosmology), intent(in) :: cosm
-    class(CAMBdata) :: State
     real(dl), intent(out) :: x, y, Om_m
     real(dl) :: a
 
@@ -2916,16 +2815,15 @@
     a = 1./(1. + z)
     x = ungrow(z, cosm)/a
     y = acc_growth(z, cosm)/a
-    Om_m = Omega_m_hm(z, cosm, State)
+    Om_m = Omega_m_hm(z, cosm)
 
     end subroutine Mead_growth_terms
 
-    real(dl) function dc_Mead(z, cosm, State)
+    real(dl) function dc_Mead(z, cosm)
 
     ! delta_c fitting function from Mead (2017; 1606.05345)
     real(dl), intent(in) :: z
     type(HM_cosmology), intent(in) :: cosm
-    class(CAMBdata) :: State
     real(dl) :: x, y, Om_m
 
     ! See Appendix A of Mead (2017) for naming convention
@@ -2941,7 +2839,7 @@
     ! a2 = 0 in the paper, so log10(Om_m)**a2 = 1 and is omitted below
     real(dl), parameter :: dc0 = (3./20.)*(12.*pi_HM)**(2./3.)
 
-    call Mead_growth_terms(z, cosm, x, y, Om_m, State)
+    call Mead_growth_terms(z, cosm, x, y, Om_m)
 
     dc_Mead = 1.
     dc_Mead = dc_Mead + f_Mead(x, y, p10, p11, p12, p13)*log10(Om_m)**a1
@@ -2950,12 +2848,11 @@
 
     end function dc_Mead
 
-    real(dl) function Dv_Mead(z, cosm, State)
+    real(dl) function Dv_Mead(z, cosm)
 
     ! Delta_v fitting function from Mead (2017; 1606.05345)
     real(dl), intent(in) :: z
     type(HM_cosmology), intent(in) :: cosm
-    class(CAMBdata) :: State
     real(dl) :: x, y, Om_m
 
     ! See Appendix A of Mead (2017) for naming convention
@@ -2971,7 +2868,7 @@
     integer, parameter :: a4 = 2
     real(dl), parameter :: Dv0 = 18.*pi_HM**2
 
-    call Mead_growth_terms(z, cosm, x, y, Om_m, State)
+    call Mead_growth_terms(z, cosm, x, y, Om_m)
 
     Dv_Mead = 1.
     Dv_Mead = Dv_Mead + f_Mead(x, y, p30, p31, p32, p33)*log10(Om_m)**a3

@@ -96,6 +96,8 @@ class LateDE(DarkEnergyModel):
         ("fourier_bn", AllocatableArrayDouble, "Fourier cosine coefficients B_n"),
         ("fourier_zint", AllocatableArrayDouble, "Grid for Fourier continuity integral"),
         ("fourier_Iint", AllocatableArrayDouble, "Precomputed Fourier continuity integral"),
+        ("pade_eps0", c_double, "Pade-w parameter"),
+        ("pade_eta0", c_double, "Pade-w parameter"),
     ]
 
     def set_params(self,
@@ -180,6 +182,8 @@ class LateDE(DarkEnergyModel):
                     fourier_zmed=2.8,
                     fourier_zini=3.0,
                     fourier_nint=4097,
+                    pade_eta0=0.0,
+                    pade_eps0=0.0,
                    ):
         self.DEmodel = DEmodel
         self.w0 = w0
@@ -867,7 +871,9 @@ class LateDE(DarkEnergyModel):
 
             self.fourier_zint = fourier_zint
             self.fourier_Iint = fourier_Iint
-
+        elif DEmodel == 11:
+            self.pade_eps0 = pade_eps0
+            self.pade_eta0 = pade_eta0
 @fortran_class
 class DarkEnergyPPF(LateDE):
     """

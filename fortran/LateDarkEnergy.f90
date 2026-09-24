@@ -10,6 +10,7 @@ module LateDE
 
     private
     real(dl) :: grho_de_today
+    real(dl) :: omega_de
     type, extends(TDarkEnergyModel) :: TLateDE
         integer  :: DEmodel
         ! Constant w and CPL
@@ -67,6 +68,9 @@ module LateDE
         ! repeated Si/Ci evaluations inside CAMB.
         real(dl), allocatable :: fourier_zint(:)
         real(dl), allocatable :: fourier_Iint(:)
+        ! Pade-w parameters
+        real(dl) :: pade_eps0
+        real(dl) :: pade_eta0
 
         contains
         procedure :: ReadParams => TLateDE_ReadParams
@@ -356,7 +360,9 @@ module LateDE
                     w_de = -1._dl
 
                 end if
-
+            case(11)
+                ! Pade-w parameterization
+                w_de = -1.0 + 2.0 * this%pade_eps0 / (3.0 + this%pade_eta0 * (a**(-3.0) - 1.0))
             case default        
                 stop "Invalid DEmodel"   
         end select
@@ -434,6 +440,8 @@ module LateDE
         integer :: n
         ! Fourier
         real(dl) :: Ifourier
+        ! Pade-w
+        real(dl), parameter :: PADE_ETA0_TOLERANCE = 1e-3
 
         grho_de = 0
         z = 1.0_dl/a - 1.0_dl
@@ -775,8 +783,14 @@ module LateDE
                 end if
 
                 grho_de = grho_de_today * exp(3._dl*Ifourier)
-
-
+            case(11)
+                ! Pade-w parameterization
+                ! JVR NOTE: the equations below are vibe-coded, please check this!!!!!!
+                if (abs(this%pade_eta0 - 3.0) < PADE_ETA0_TOLERANCE) then
+                    grho_de = grho_de_today * exp((2.0 * this%pade_eps0 / 3.0) * (1.0 - a**3))
+                else
+                    grho_de = grho_de_today * (1.0 + (this%pade_eta0 - 3.0) / 3.0 * (1.0 - a**3)) ** (2.0 * this%pade_eps0 / (this%pade_eta0 - 3.0))
+                end if
             case default
                 stop "Invalid DEmodel"
         end select
@@ -793,6 +807,7 @@ module LateDE
         select type (State)
             type is (CAMBdata)
             grho_de_today = State%grhov
+            omega_de = State%omega_de
         end select
 
         ! if (this%DEmodel == 8) then
@@ -836,6 +851,7 @@ module LateDE
     subroutine TLateDE_Effective_w_wa(this, w, wa)
         class(TLateDE), intent(inout) :: this
         real(dl), intent(out) :: w, wa
+        real(dl) :: a1
 
         select case (this%DEmodel)
             case(1) 
@@ -847,8 +863,10 @@ module LateDE
                 w = this%w0
                 wa = this%w1
             case(3)
-                ! No unique CPL equivalent for binned w(z)
-                stop "[TLateDE_Effective_w_wa] Effective (w,wa) not defined for binned w(z)"
+                ! JVR NOTE: this is just an approximation and should never be used!!
+                w = this%w_knot(1)
+                a1 = 1.0/(1.0 + this%z_knot(1))
+                wa = -(w - this%w_knot(2))/(1.0 - a1)
     
             case(4)
                 ! No unique CPL equivalent for flexknots

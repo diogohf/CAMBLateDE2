@@ -29,8 +29,6 @@ halofit_mead2015 = "mead2015"
 halofit_mead2016 = "mead2016"
 halofit_mead2020 = "mead2020"
 halofit_mead2020_feedback = "mead2020_feedback"
-halofit_mead2020_de = "mead2020_de"
-halofit_mead2020_feedback_de = "mead2020_feedback_de"
 
 halofit_default = halofit_mead2020
 
@@ -46,8 +44,6 @@ halofit_version_names = {
     halofit_mead2016: 5,
     halofit_mead2020: 9,
     halofit_mead2020_feedback: 10,
-    halofit_mead2020_de: 11,
-    halofit_mead2020_feedback_de: 12,
 }
 
 
@@ -127,16 +123,11 @@ class Halofit(NonLinearModel):
             - mead2016: Alias for 'mead'.
             - mead2020: 2020 version of HMcode `arXiv:2009.01858 <https://arxiv.org/abs/2009.01858>`_
             - mead2020_feedback: 2020 version of HMcode with baryonic feedback `arXiv:2009.01858 <https://arxiv.org/abs/2009.01858>`_
-            - mead2020_de: Experimental HMcode 2020 variant that uses the active CAMB dark-energy background
-              instead of its effective w0-wa approximation.
-            - mead2020_feedback_de: Experimental HMcode 2020 baryonic-feedback variant that uses the active
-              CAMB dark-energy background instead of its effective w0-wa approximation.
         :param HMCode_A_baryon: HMcode parameter A_baryon. Default 3.13.
                                 Used only in models mead2015 and mead2016 (and its alias mead).
         :param HMCode_eta_baryon: HMcode parameter eta_baryon. Default 0.603.
                                 Used only in mead2015 and mead2016 (and its alias mead).
-        :param HMCode_logT_AGN: HMcode parameter logT_AGN. Default 7.8. Used only in models
-                                mead2020_feedback and mead2020_feedback_de.
+        :param HMCode_logT_AGN: HMcode parameter logT_AGN. Default 7.8. Used only in model mead2020_feedback.
         :param HMCode_wiggle_max_fnu: Largest neutrino mass fraction for which HMcode-2020 reuses the
                                      growth-scaled BAO wiggle across redshifts. Default 0.01.
         """
@@ -195,15 +186,10 @@ class SPkNonLinear(NonLinearModel):
                 halofit_version_int = halofit_version_names[self.BaseModel.halofit_version]
             else:
                 halofit_version_int = int(self.BaseModel.halofit_version)
-            feedback_versions = {
-                halofit_version_names[halofit_mead2020_feedback],
-                halofit_version_names[halofit_mead2020_feedback_de],
-            }
-            if halofit_version_int in feedback_versions:
+            if halofit_version_int == halofit_version_names[halofit_mead2020_feedback]:
                 raise CAMBValueError(
-                    "SP(k) is not compatible with the mead2020 feedback variants. "
-                    "Use halofit_version='mead2020' or 'mead2020_de' "
-                    "(or another non-feedback option) when enabling SPk_feedback."
+                    "SP(k) is not compatible with halofit_version='mead2020_feedback'. "
+                    "Use halofit_version='mead2020' (or another non-feedback option) when enabling SPk_feedback."
                 )
 
             hmcode_2015_2016_versions = {
@@ -275,7 +261,7 @@ class SPkNonLinear(NonLinearModel):
         :param halofit_version: Base Halofit version for the wrapped non-linear model.
         :param HMCode_A_baryon: HMcode A_baryon parameter (mead2015/2016 only). Default 3.13.
         :param HMCode_eta_baryon: HMcode eta_baryon parameter (mead2015/2016 only). Default 0.603.
-        :param HMCode_logT_AGN: HMcode log10(T_AGN/K) parameter (mead2020_feedback variants only). Default 7.8.
+        :param HMCode_logT_AGN: HMcode log10(T_AGN/K) parameter (mead2020_feedback only). Default 7.8.
         :param HMCode_wiggle_max_fnu: Largest neutrino mass fraction for reusing the HMcode-2020 BAO wiggle.
                                      Default 0.01.
         :return: Self, for fluent configuration.
@@ -333,7 +319,7 @@ class SPkNonLinear(NonLinearModel):
            :meth:`~camb.results.CAMBdata.get_linear_matter_power_spectrum`
            with ``nonlinear=True`` to inspect which (z, k) cells are invalid.
 
-        Cannot be combined with either ``mead2020_feedback`` halofit variant.
+        Cannot be combined with ``halofit_version='mead2020_feedback'``.
         """
         if self.BaseModel is None:
             self.BaseModel = Halofit()
