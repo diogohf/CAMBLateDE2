@@ -98,6 +98,8 @@ class LateDE(DarkEnergyModel):
         ("fourier_Iint", AllocatableArrayDouble, "Precomputed Fourier continuity integral"),
         ("pade_eps0", c_double, "Pade-w parameter"),
         ("pade_eta0", c_double, "Pade-w parameter"),
+        # Thawing scalar-field fit - Shajib & Frieman 2025, arXiv:2502.06929, Eq. (7)
+        ("thaw_alpha", c_double, "Thawing fit alpha in w(z) = -1 + (1+w0) exp(-alpha z)"),
     ]
 
     def set_params(self,
@@ -184,6 +186,8 @@ class LateDE(DarkEnergyModel):
                     fourier_nint=4097,
                     pade_eta0=0.0,
                     pade_eps0=0.0,
+                    # Thawing scalar-field fit
+                    thaw_alpha=1.45,
                    ):
         self.DEmodel = DEmodel
         self.w0 = w0
@@ -874,6 +878,13 @@ class LateDE(DarkEnergyModel):
         elif DEmodel == 11:
             self.pade_eps0 = pade_eps0
             self.pade_eta0 = pade_eta0
+        elif DEmodel == 12:
+            # Thawing scalar-field fit, Shajib & Frieman 2025, arXiv:2502.06929, Eq. (7):
+            #   w(z) = -1 + (1+w0) exp(-alpha z)
+            # Uses w0 together with thaw_alpha (paper prior: alpha ~ U(1.35, 1.55)).
+            if thaw_alpha < 0:
+                raise ValueError("thaw_alpha must be non-negative")
+            self.thaw_alpha = thaw_alpha
 @fortran_class
 class DarkEnergyPPF(LateDE):
     """

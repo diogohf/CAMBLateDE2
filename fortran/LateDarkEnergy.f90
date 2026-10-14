@@ -71,6 +71,9 @@ module LateDE
         ! Pade-w parameters
         real(dl) :: pade_eps0
         real(dl) :: pade_eta0
+        ! Thawing scalar-field fit - Shajib & Frieman 2025, arXiv:2502.06929, Eq. (7)
+        ! Uses w0 together with thaw_alpha
+        real(dl) :: thaw_alpha
 
         contains
         procedure :: ReadParams => TLateDE_ReadParams
@@ -363,6 +366,11 @@ module LateDE
             case(11)
                 ! Pade-w parameterization
                 w_de = -1.0 + 2.0 * this%pade_eps0 / (3.0 + this%pade_eta0 * (a**(-3.0) - 1.0))
+            case(12)
+                ! Thawing scalar-field fit
+                ! Shajib & Frieman 2025, arXiv:2502.06929, Eq. (7)
+                ! w(z) = -1 + (1+w0) exp(-alpha z)
+                w_de = -1._dl + (1._dl + this%w0) * exp(-this%thaw_alpha * z)
             case default        
                 stop "Invalid DEmodel"   
         end select
@@ -416,6 +424,48 @@ module LateDE
         y = (1._dl-t)*ygrid(lo) + t*ygrid(hi)
 
     end function TLateDE_LinearInterp
+
+    function TLateDE_E1(x) result(E1)
+        ! Exponential integral E1(x) for x > 0, used by DEmodel=12.
+        ! Power series for x <= 1, continued fraction (modified Lentz) for x > 1.
+        real(dl), intent(in) :: x
+        real(dl) :: E1
+        real(dl), parameter :: euler_gamma = 0.5772156649015329_dl
+        real(dl), parameter :: eps = 1e-15_dl, fpmin = 1e-300_dl
+        integer, parameter :: maxit = 200
+        real(dl) :: b, c, d, h, del, an, term
+        integer :: i
+
+        if (x <= 0._dl) error stop "[TLateDE_E1] x must be positive"
+
+        if (x > 700._dl) then
+            E1 = 0._dl
+        else if (x <= 1._dl) then
+            E1 = -euler_gamma - log(x)
+            term = 1._dl
+            do i = 1, maxit
+                term = -term * x / i
+                del = -term / i
+                E1 = E1 + del
+                if (abs(del) < abs(E1) * eps) exit
+            end do
+        else
+            b = x + 1._dl
+            c = 1._dl / fpmin
+            d = 1._dl / b
+            h = d
+            do i = 1, maxit
+                an = -real(i, dl)**2
+                b = b + 2._dl
+                d = 1._dl / (an * d + b)
+                c = b + an / c
+                del = c * d
+                h = h * del
+                if (abs(del - 1._dl) < eps) exit
+            end do
+            E1 = h * exp(-x)
+        end if
+    end function TLateDE_E1
 
     function TLateDE_grho_de(this, a) result(grho_de)
         ! Returns 8*pi*G * rho_de, no factor of a^4
@@ -791,6 +841,17 @@ module LateDE
                 else
                     grho_de = grho_de_today * (1.0 + (this%pade_eta0 - 3.0) / 3.0 * (1.0 - a**3)) ** (2.0 * this%pade_eps0 / (this%pade_eta0 - 3.0))
                 end if
+            case(12)
+                ! Thawing scalar-field fit
+                ! Shajib & Frieman 2025, arXiv:2502.06929, Eq. (8)
+                ! rho(z)/rho(0) = exp[3 e^alpha (1+w0) {E1(alpha) - E1(alpha(1+z))}]
+                if (this%thaw_alpha == 0._dl) then
+                    ! alpha=0 is constant w=w0
+                    grho_de = grho_de_today * a**(-3._dl * (1._dl + this%w0))
+                else
+                    grho_de = grho_de_today * exp(3._dl * exp(this%thaw_alpha) * (1._dl + this%w0) * &
+                        (TLateDE_E1(this%thaw_alpha) - TLateDE_E1(this%thaw_alpha / a)))
+                end if
             case default
                 stop "Invalid DEmodel"
         end select
@@ -889,6 +950,11 @@ module LateDE
 
             case(10)
                 stop "[TLateDE_Effective_w_wa] Effective (w,wa) not defined for Fourier w(z)"
+
+            case(12)
+                ! Thawing fit: match w and dw/dz at z=0
+                w = this%w0
+                wa = -this%thaw_alpha * (1._dl + this%w0)
         end select
     end subroutine TLateDE_Effective_w_wa
 
