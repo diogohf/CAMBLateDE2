@@ -888,13 +888,12 @@ class CAMBparams(F2003Class):
         :param dark_energy_model: model to use ('fluid' or 'ppf'), default is 'fluid'
         :return: self
         """
-
-        de = self.make_class_named(dark_energy_model, DarkEnergyEqnOfState)
-        de.set_params(
-            w=w, wa=wa, cs2=cs2, use_tabulated_w=use_tabulated_w, wde_a_array=wde_a_array, wde_w_array=wde_w_array
+        # CAMB_LATEDE2: the upstream DarkEnergyEqnOfState/DarkEnergyFluid classes are not available in this fork
+        raise CAMBError(
+            "set_dark_energy() is not supported in CAMBLateDE: the upstream fluid/PPF w, wa classes were removed. "
+            "Use dark_energy_model='ppf' with a DEmodel instead, e.g. "
+            "camb.set_params(..., dark_energy_model='ppf', DEmodel=2, w0=-0.9, w1=0.1) for w0-wa (CPL)."
         )
-        self.DarkEnergy = de
-        return self
 
     def set_dark_energy_w_a(self, a, w, dark_energy_model="fluid"):
         """
@@ -905,12 +904,12 @@ class CAMBparams(F2003Class):
         :param dark_energy_model:  model to use ('fluid' or 'ppf'), default is 'fluid'
         :return: self
         """
-        if dark_energy_model == "fluid" and np.any(w < -1):
-            raise CAMBError("fluid dark energy model does not support w crossing -1")
-        self.DarkEnergy = self.make_class_named(dark_energy_model, DarkEnergyEqnOfState)
-        # Note that assigning to allocatable fields makes deep copies of the object
-        self.DarkEnergy.set_w_a_table(a, w)
-        return self
+        # CAMB_LATEDE2: the upstream DarkEnergyEqnOfState/DarkEnergyFluid classes are not available in this fork
+        raise CAMBError(
+            "set_dark_energy_w_a() is not supported in CAMBLateDE: tabulated w(a) via the upstream fluid/PPF "
+            "classes was removed. Use dark_energy_model='ppf' with a DEmodel instead, e.g. DEmodel=4 (flexknots, "
+            "w linearly interpolated in a) or DEmodel=5 (cubic spline in z)."
+        )
 
     def get_zre(self):
         return self.Reion.get_zre(self)

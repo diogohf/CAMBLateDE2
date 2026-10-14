@@ -100,6 +100,10 @@ class LateDE(DarkEnergyModel):
         ("pade_eta0", c_double, "Pade-w parameter"),
         # Thawing scalar-field fit - Shajib & Frieman 2025, arXiv:2502.06929, Eq. (7)
         ("thaw_alpha", c_double, "Thawing fit alpha in w(z) = -1 + (1+w0) exp(-alpha z)"),
+        # Binned rho_DE(z)/rho_DE(0) with tanh smoothing
+        ("rho_z", AllocatableArrayDouble, "Lower redshift edges of the rho_DE bins"),
+        ("rho_bin", AllocatableArrayDouble, "rho_DE(z)/rho_DE(0) in each bin"),
+        ("rho_delta", c_double, "tanh smoothing width in z for rho_DE bins"),
     ]
 
     def set_params(self,
@@ -188,6 +192,10 @@ class LateDE(DarkEnergyModel):
                     pade_eps0=0.0,
                     # Thawing scalar-field fit
                     thaw_alpha=1.45,
+                    # Binned rho_DE
+                    rho_z=None,
+                    rho_bin=None,
+                    rho_delta=0.1,
                    ):
         self.DEmodel = DEmodel
         self.w0 = w0
@@ -876,8 +884,16 @@ class LateDE(DarkEnergyModel):
             self.fourier_zint = fourier_zint
             self.fourier_Iint = fourier_Iint
         elif DEmodel == 11:
-            self.pade_eps0 = pade_eps0
-            self.pade_eta0 = pade_eta0
+            for name, value in (("pade_eps0", pade_eps0), ("pade_eta0", pade_eta0)):
+                value = np.asarray(value)
+                if value.ndim != 0 or value.dtype == bool or not np.isrealobj(value) or not np.isfinite(value):
+                    raise ValueError(f"{name} must be a finite real scalar")
+
+            if pade_eta0 < 0:
+                raise ValueError("pade_eta0 must be non-negative")
+
+            self.pade_eps0 = float(pade_eps0)
+            self.pade_eta0 = float(pade_eta0)
         elif DEmodel == 12:
             # Thawing scalar-field fit, Shajib & Frieman 2025, arXiv:2502.06929, Eq. (7):
             #   w(z) = -1 + (1+w0) exp(-alpha z)
@@ -885,6 +901,45 @@ class LateDE(DarkEnergyModel):
             if thaw_alpha < 0:
                 raise ValueError("thaw_alpha must be non-negative")
             self.thaw_alpha = thaw_alpha
+        elif DEmodel in (13, 14):
+            # Binned rho_DE(z)/rho_DE(0) with tanh-smoothed steps:
+            #   f(z) = r_1 + sum_{i>=2} (r_i - r_{i-1}) [1 + tanh((z - z_i)/delta)] / 2
+            #   rho_DE(z)/rho_DE(0) = f(z)/f(0),  w = -1 + (1+z)/3 dln(rho)/dz
+            # rho_z are the bin lower edges (first must be 0), rho_bin the bin values (first must be 1).
+            # Above the last edge rho is constant (w=-1).
+            #
+            # DEmodel=14 uses the same rho_z/rho_bin as nodes of a linear interpolation in z of
+            # f_DE(z) = rho_DE(z)/rho_DE(0) (no smoothing; w jumps at the nodes).
+            if rho_z is None or rho_bin is None:
+                raise ValueError(f"DEmodel={DEmodel} requires rho_z and rho_bin")
+
+            rho_z = np.asarray(rho_z, dtype=np.float64)
+            rho_bin = np.asarray(rho_bin, dtype=np.float64)
+
+            if rho_z.ndim != 1 or rho_bin.ndim != 1:
+                raise ValueError("rho_z and rho_bin must be one-dimensional")
+
+            if len(rho_z) != len(rho_bin) or len(rho_z) == 0:
+                raise ValueError("rho_z and rho_bin must have the same non-zero length")
+
+            if not np.isclose(rho_z[0], 0.0):
+                raise ValueError("First rho_z edge must be z=0")
+
+            if np.any(np.diff(rho_z) <= 0):
+                raise ValueError("rho_z must be strictly increasing")
+
+            if not np.isclose(rho_bin[0], 1.0):
+                raise ValueError("First rho_bin value must be 1 (rho_DE(0)/rho_DE(0))")
+
+            if np.any(rho_bin <= 0):
+                raise ValueError("rho_bin values must be positive")
+
+            if DEmodel == 13 and rho_delta <= 0:
+                raise ValueError("rho_delta must be positive")
+
+            self.rho_z = rho_z
+            self.rho_bin = rho_bin
+            self.rho_delta = rho_delta
 @fortran_class
 class DarkEnergyPPF(LateDE):
     """

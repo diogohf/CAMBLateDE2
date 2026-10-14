@@ -9,8 +9,6 @@ module LateDE
     implicit none
 
     private
-    real(dl) :: grho_de_today
-    real(dl) :: omega_de
     type, extends(TDarkEnergyModel) :: TLateDE
         integer  :: DEmodel
         ! Constant w and CPL
@@ -74,6 +72,12 @@ module LateDE
         ! Thawing scalar-field fit - Shajib & Frieman 2025, arXiv:2502.06929, Eq. (7)
         ! Uses w0 together with thaw_alpha
         real(dl) :: thaw_alpha
+        ! Binned rho_DE(z)/rho_DE(0) with tanh-smoothed steps
+        ! rho_z: bin lower edges (rho_z(1)=0), rho_bin: ratio in each bin (rho_bin(1)=1)
+        ! rho_delta: tanh width in z. Above the last edge rho is constant (w=-1)
+        real(dl), allocatable :: rho_z(:)
+        real(dl), allocatable :: rho_bin(:)
+        real(dl) :: rho_delta
 
         contains
         procedure :: ReadParams => TLateDE_ReadParams
@@ -82,6 +86,7 @@ module LateDE
         procedure :: w_de => TLateDE_w_de
         procedure :: grho_de => TLateDE_grho_de
         procedure :: Effective_w_wa => TLateDE_Effective_w_wa   !VM: wont be called with CASARINI (our mod)         
+        procedure :: assume_scale_indep_lowz_growth => TLateDE_assume_scale_indep_lowz_growth
         procedure, nopass :: SelfPointer => TLateDE_SelfPointer
         procedure :: BackgroundDensityAndPressure => TLateDE_density 
     end type TLateDE
@@ -106,6 +111,10 @@ module LateDE
         ! Fourier
         real(dl) :: amed, aini, theta, phase
         real(dl) :: wmed, slope
+        ! Pade-w
+        real(dl) :: a3
+        ! Binned rho
+        real(dl) :: f, dfdz
 
         w_de = 0
         z = 1.0_dl/a - 1.0_dl
@@ -365,12 +374,28 @@ module LateDE
                 end if
             case(11)
                 ! Pade-w parameterization
-                w_de = -1.0 + 2.0 * this%pade_eps0 / (3.0 + this%pade_eta0 * (a**(-3.0) - 1.0))
+                ! w = -1 + 2 eps0 / (3 + eta0 (a^-3 - 1)), written without a^-3
+                a3 = a**3
+                if (this%pade_eta0 == 0._dl) then
+                    ! eta0=0 is constant w (avoids 0/0 at a=0)
+                    w_de = -1._dl + 2._dl*this%pade_eps0/3._dl
+                else
+                    w_de = -1._dl + 2._dl*this%pade_eps0*a3 / &
+                        (this%pade_eta0 + (3._dl - this%pade_eta0)*a3)
+                end if
             case(12)
                 ! Thawing scalar-field fit
                 ! Shajib & Frieman 2025, arXiv:2502.06929, Eq. (7)
                 ! w(z) = -1 + (1+w0) exp(-alpha z)
                 w_de = -1._dl + (1._dl + this%w0) * exp(-this%thaw_alpha * z)
+            case(13)
+                ! Binned rho_DE(z)/rho_DE(0): w = -1 + (1+z)/3 dln(rho)/dz
+                call TLateDE_RhoBinned(this, z, f, dfdz)
+                w_de = -1._dl + (1._dl + z) / 3._dl * dfdz / f
+            case(14)
+                ! Linearly interpolated f_DE(z) = rho_DE(z)/rho_DE(0): w = -1 + (1+z)/3 dln(f)/dz
+                call TLateDE_RhoLinear(this, z, f, dfdz)
+                w_de = -1._dl + (1._dl + z) / 3._dl * dfdz / f
             case default        
                 stop "Invalid DEmodel"   
         end select
@@ -425,6 +450,45 @@ module LateDE
 
     end function TLateDE_LinearInterp
 
+    subroutine TLateDE_RhoBinned(this, z, f, dfdz)
+        ! Tanh-smoothed piecewise-constant profile used by DEmodel=13:
+        !   f(z) = r_1 + sum_{i>=2} (r_i - r_{i-1}) * [1 + tanh((z - z_i)/delta)] / 2
+        ! and its derivative df/dz.
+        class(TLateDE), intent(in) :: this
+        real(dl), intent(in) :: z
+        real(dl), intent(out) :: f, dfdz
+        real(dl) :: t
+        integer :: i
+
+        f = this%rho_bin(1)
+        dfdz = 0._dl
+        do i = 2, size(this%rho_z)
+            t = tanh((z - this%rho_z(i)) / this%rho_delta)
+            f = f + (this%rho_bin(i) - this%rho_bin(i-1)) * 0.5_dl * (1._dl + t)
+            dfdz = dfdz + (this%rho_bin(i) - this%rho_bin(i-1)) * (1._dl - t**2) / (2._dl * this%rho_delta)
+        end do
+    end subroutine TLateDE_RhoBinned
+
+    subroutine TLateDE_RhoLinear(this, z, f, dfdz)
+        ! f_DE(z) linearly interpolated in z between nodes (rho_z, rho_bin), used by DEmodel=14.
+        ! Constant above the last node.
+        class(TLateDE), intent(in) :: this
+        real(dl), intent(in) :: z
+        real(dl), intent(out) :: f, dfdz
+        integer :: i, n
+
+        n = size(this%rho_z)
+        f = this%rho_bin(n)
+        dfdz = 0._dl
+        do i = 1, n-1
+            if (z < this%rho_z(i+1)) then
+                dfdz = (this%rho_bin(i+1) - this%rho_bin(i)) / (this%rho_z(i+1) - this%rho_z(i))
+                f = this%rho_bin(i) + dfdz * (z - this%rho_z(i))
+                exit
+            end if
+        end do
+    end subroutine TLateDE_RhoLinear
+
     function TLateDE_E1(x) result(E1)
         ! Exponential integral E1(x) for x > 0, used by DEmodel=12.
         ! Power series for x <= 1, continued fraction (modified Lentz) for x > 1.
@@ -468,7 +532,9 @@ module LateDE
     end function TLateDE_E1
 
     function TLateDE_grho_de(this, a) result(grho_de)
-        ! Returns 8*pi*G * rho_de, no factor of a^4
+        ! Returns the dimensionless ratio rho_de(a)/rho_de(a=1).
+        ! Note: unlike the base TDarkEnergyModel%grho_de, there is no factor of a^4;
+        ! TLateDE_density multiplies by grhov and a^2.
         class(TLateDE) :: this
         real(dl), intent(in) :: a
         real(dl) :: grho_de, z
@@ -491,7 +557,9 @@ module LateDE
         ! Fourier
         real(dl) :: Ifourier
         ! Pade-w
-        real(dl), parameter :: PADE_ETA0_TOLERANCE = 1e-3
+        real(dl) :: delta, q, log_ratio
+        ! Binned rho
+        real(dl) :: f, f0, dfdz
 
         grho_de = 0
         z = 1.0_dl/a - 1.0_dl
@@ -499,11 +567,11 @@ module LateDE
         select case (this%DEmodel)
             case(1)
                 ! Constant w
-                grho_de = grho_de_today * a**(-3 * (1 + this%w0))
+                grho_de = a**(-3 * (1 + this%w0))
 
             case(2)
                 ! CPL parametrization w0wa
-                grho_de = grho_de_today * a**(-3 * (1 + this%w0 + this%w1)) * exp(-3 * this%w1 * (1 - a))
+                grho_de = a**(-3 * (1 + this%w0 + this%w1)) * exp(-3 * this%w1 * (1 - a))
             
             case(3)
                 ! Piecewise-constant binned w
@@ -520,7 +588,7 @@ module LateDE
                     end if
     
                     if (z < this%z_knot(i)) then
-                        grho_de = grho_de_today * faci * a**(-3.0_dl * (1.0_dl + this%w_knot(i)))
+                        grho_de = faci * a**(-3.0_dl * (1.0_dl + this%w_knot(i)))
                     exit
                     end if
                 end do
@@ -531,7 +599,7 @@ module LateDE
                         faci = faci * temp
                     end do
                     faci = faci * (1.0_dl + this%z_knot(max_num_of_bins))**(3.0_dl * (this%w_knot(max_num_of_bins) - (-1.0_dl)))
-                    grho_de = grho_de_today * faci
+                    grho_de = faci
                 end if
 
             case(4)
@@ -539,7 +607,7 @@ module LateDE
                 ! Appendix A2 of Ormondroyd et al. 2025, 2503.08658v2
                 if (size(this%a_flexknot) == 1) then
                     ! n=1 flexknot = constant-w model
-                    grho_de = grho_de_today * &
+                    grho_de = &
                               a**(-3._dl*(1._dl + this%w_flexknot(1)))
                 else
                     integral = 0._dl
@@ -557,7 +625,7 @@ module LateDE
                                        m_i*(a_upper-a_lower)
                         end if
                     end do    
-                    grho_de = grho_de_today * exp(3._dl*integral)
+                    grho_de = exp(3._dl*integral)
                 end if    
 
             case(5)
@@ -581,7 +649,7 @@ module LateDE
             
                 end if
             
-                grho_de = grho_de_today * &
+                grho_de = &
                           exp(3._dl*Ipoly)
                 
             case(6)
@@ -612,7 +680,7 @@ module LateDE
                         q2*(0.5_dl*z**2 - z + log(1._dl + z)) + &
                         q3*(z**3/3._dl - 0.5_dl*z**2 + z - &
                             log(1._dl + z))
-                    grho_de = grho_de_today * exp(3._dl*Ipoly)
+                    grho_de = exp(3._dl*Ipoly)
                 else    
                     ! Integral from z=0 to z=zmax
                     Imax = &
@@ -650,7 +718,7 @@ module LateDE
                         (1._dl - &
                          exp(-u**2/this%cheb_delta**2))
                          
-                    grho_de = grho_de_today * &
+                    grho_de = &
                         exp(3._dl*(Imax + Itrans))
                 endif    
 
@@ -701,7 +769,7 @@ module LateDE
                             0.5_dl*z**2 + z - &
                             log(1._dl + z))
 
-                    grho_de = grho_de_today * &
+                    grho_de = &
                               exp(3._dl*Ipoly)
 
                 else
@@ -746,7 +814,7 @@ module LateDE
                          exp(-u**2/this%bern_delta**2))
 
 
-                    grho_de = grho_de_today * &
+                    grho_de = &
                               exp(3._dl*(Imax + Itrans))
 
                 end if
@@ -772,7 +840,7 @@ module LateDE
             
                 end if
             
-                grho_de = grho_de_today * exp(3._dl*Ipoly)
+                grho_de = exp(3._dl*Ipoly)
 
             case(9)
                 ! Wavelet dark-energy density.
@@ -806,7 +874,7 @@ module LateDE
 
                 end if
 
-                grho_de = grho_de_today * &
+                grho_de = &
                         exp(3._dl*Ipoly)
 
             case(10)
@@ -832,26 +900,42 @@ module LateDE
                     Ifourier = this%fourier_Iint(size(this%fourier_Iint))
                 end if
 
-                grho_de = grho_de_today * exp(3._dl*Ifourier)
+                grho_de = exp(3._dl*Ifourier)
             case(11)
                 ! Pade-w parameterization
-                ! JVR NOTE: the equations below are vibe-coded, please check this!!!!!!
-                if (abs(this%pade_eta0 - 3.0) < PADE_ETA0_TOLERANCE) then
-                    grho_de = grho_de_today * exp((2.0 * this%pade_eps0 / 3.0) * (1.0 - a**3))
+                ! rho(a)/rho(1) = (1 + delta q)^(2 eps0/delta), delta = eta0 - 3, q = (1 - a^3)/3
+                ! Series in delta*q near zero avoids cancellation (limit delta->0 is exp(2 eps0 q))
+                delta = this%pade_eta0 - 3._dl
+                q = (1._dl - a**3) / 3._dl
+                if (abs(delta*q) < 1.e-4_dl) then
+                    log_ratio = 2._dl*this%pade_eps0 * &
+                        (q - delta*q**2/2._dl + delta**2*q**3/3._dl)
                 else
-                    grho_de = grho_de_today * (1.0 + (this%pade_eta0 - 3.0) / 3.0 * (1.0 - a**3)) ** (2.0 * this%pade_eps0 / (this%pade_eta0 - 3.0))
+                    ! 1 + delta q written as (eta0 + (3-eta0) a^3)/3 to avoid cancellation for small eta0
+                    log_ratio = 2._dl*this%pade_eps0/delta * &
+                        log((this%pade_eta0 + (3._dl - this%pade_eta0)*a**3) / 3._dl)
                 end if
+                grho_de = exp(log_ratio)
             case(12)
                 ! Thawing scalar-field fit
                 ! Shajib & Frieman 2025, arXiv:2502.06929, Eq. (8)
                 ! rho(z)/rho(0) = exp[3 e^alpha (1+w0) {E1(alpha) - E1(alpha(1+z))}]
                 if (this%thaw_alpha == 0._dl) then
                     ! alpha=0 is constant w=w0
-                    grho_de = grho_de_today * a**(-3._dl * (1._dl + this%w0))
+                    grho_de = a**(-3._dl * (1._dl + this%w0))
                 else
-                    grho_de = grho_de_today * exp(3._dl * exp(this%thaw_alpha) * (1._dl + this%w0) * &
+                    grho_de = exp(3._dl * exp(this%thaw_alpha) * (1._dl + this%w0) * &
                         (TLateDE_E1(this%thaw_alpha) - TLateDE_E1(this%thaw_alpha / a)))
                 end if
+            case(13)
+                ! Binned rho_DE(z)/rho_DE(0), normalized so the ratio is exactly 1 today
+                call TLateDE_RhoBinned(this, z, f, dfdz)
+                call TLateDE_RhoBinned(this, 0._dl, f0, dfdz)
+                grho_de = f / f0
+            case(14)
+                ! Linearly interpolated f_DE(z); f_DE(0)=1 by construction
+                call TLateDE_RhoLinear(this, z, f, dfdz)
+                grho_de = f
             case default
                 stop "Invalid DEmodel"
         end select
@@ -865,10 +949,18 @@ module LateDE
 
         integer :: i
 
-        select type (State)
-            type is (CAMBdata)
-            grho_de_today = State%grhov
-            omega_de = State%omega_de
+        ! Exact LambdaCDM limits: skip DE perturbations (as upstream TDarkEnergyEqnOfState_Init does).
+        ! Set explicitly every time, since the same object may be reused with different parameters.
+        select case (this%DEmodel)
+            case(1, 12)
+                ! constant w = w0; thawing fit with w0 = -1 is w = -1 for any alpha
+                this%is_cosmological_constant = abs(this%w0 + 1._dl) < 1.e-6_dl
+            case(2)
+                this%is_cosmological_constant = abs(this%w0 + 1._dl) < 1.e-6_dl .and. this%w1 == 0._dl
+            case(11)
+                this%is_cosmological_constant = abs(this%pade_eps0) < 1.e-6_dl
+            case default
+                this%is_cosmological_constant = .false.
         end select
 
         ! if (this%DEmodel == 8) then
@@ -892,6 +984,15 @@ module LateDE
         ! end if
     end subroutine TLateDE_Init
 
+    function TLateDE_assume_scale_indep_lowz_growth(this)
+        ! As upstream TDarkEnergyEqnOfState: smooth (cs2=1) w(z) dark energy gives scale-independent
+        ! low-z growth to good approximation, so HMcode can extract the BAO wiggle once at z=0.
+        class(TLateDE) :: this
+        logical :: TLateDE_assume_scale_indep_lowz_growth
+
+        TLateDE_assume_scale_indep_lowz_growth = this%cs2_lam > 0.99_dl
+    end function TLateDE_assume_scale_indep_lowz_growth
+
     subroutine TLateDE_ReadParams(this, Ini)
         use IniObjects
         use FileUtils
@@ -910,9 +1011,14 @@ module LateDE
     end subroutine TLateDE_PrintFeedback
 
     subroutine TLateDE_Effective_w_wa(this, w, wa)
+        use config, only: GlobalError, error_unsupported_params
         class(TLateDE), intent(inout) :: this
         real(dl), intent(out) :: w, wa
         real(dl) :: a1
+
+        ! Defined values on error paths; unsupported models raise a CAMBError in Python
+        w = -1._dl
+        wa = 0._dl
 
         select case (this%DEmodel)
             case(1) 
@@ -931,30 +1037,51 @@ module LateDE
     
             case(4)
                 ! No unique CPL equivalent for flexknots
-                stop "[TLateDE_Effective_w_wa] Effective (w,wa) not defined for flexknots"
+                call GlobalError("[TLateDE_Effective_w_wa] Effective (w,wa) not defined for flexknots", &
+                    error_unsupported_params)
             
             case(5)
-                stop "[TLateDE_Effective_w_wa] Effective (w,wa) not defined for cubic spline"
+                call GlobalError("[TLateDE_Effective_w_wa] Effective (w,wa) not defined for cubic spline", &
+                    error_unsupported_params)
 
             case(6)
-                stop "[TLateDE_Effective_w_wa] Effective (w,wa) not defined for Chebyshev w(z)"
+                call GlobalError("[TLateDE_Effective_w_wa] Effective (w,wa) not defined for Chebyshev w(z)", &
+                    error_unsupported_params)
 
             case(7)
-                stop "[TLateDE_Effective_w_wa] Effective (w,wa) not defined for Bernstein w(z)"
+                call GlobalError("[TLateDE_Effective_w_wa] Effective (w,wa) not defined for Bernstein w(z)", &
+                    error_unsupported_params)
 
             case(8)
-                stop "[TLateDE_Effective_w_wa] Effective (w,wa) not defined for Gaussian-process w(z)"
+                call GlobalError("[TLateDE_Effective_w_wa] Effective (w,wa) not defined for Gaussian-process w(z)", &
+                    error_unsupported_params)
             
             case(9)
-                stop "[TLateDE_Effective_w_wa] Effective (w,wa) not defined for wavelet w(z)"
+                call GlobalError("[TLateDE_Effective_w_wa] Effective (w,wa) not defined for wavelet w(z)", &
+                    error_unsupported_params)
 
             case(10)
-                stop "[TLateDE_Effective_w_wa] Effective (w,wa) not defined for Fourier w(z)"
+                call GlobalError("[TLateDE_Effective_w_wa] Effective (w,wa) not defined for Fourier w(z)", &
+                    error_unsupported_params)
+
+            case(11)
+                ! Pade-w: w and dw/da at a=1 (wa = -dw/da)
+                w = -1._dl + 2._dl*this%pade_eps0/3._dl
+                wa = -2._dl*this%pade_eps0*this%pade_eta0/3._dl
 
             case(12)
                 ! Thawing fit: match w and dw/dz at z=0
                 w = this%w0
                 wa = -this%thaw_alpha * (1._dl + this%w0)
+
+            case(13, 14)
+                ! Binned / linear rho: w and finite-difference dw/da at a=1
+                w = this%w_de(1._dl)
+                wa = (this%w_de(1._dl - 1e-4_dl) - w) / 1e-4_dl
+
+            case default
+                call GlobalError("[TLateDE_Effective_w_wa] Effective (w,wa) not defined for this DEmodel", &
+                    error_unsupported_params)
         end select
     end subroutine TLateDE_Effective_w_wa
 
@@ -978,7 +1105,7 @@ module LateDE
         real(dl), optional, intent(out) :: w
 
         if (a > 1e-10) then
-            grhov_t = this%grho_de(a) * a**2
+            grhov_t = grhov * this%grho_de(a) * a**2
         else
             grhov_t = 0
         end if
